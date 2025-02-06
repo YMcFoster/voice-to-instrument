@@ -1,0 +1,6 @@
+fastapi>=0.68.0
+uvicorn>=0.15.0
+python-multipart
+librosa==0.10.0
+numpy==1.23.5
+crepe==0.0.12
