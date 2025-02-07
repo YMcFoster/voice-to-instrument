@@ -4,6 +4,7 @@ import { Audio } from 'expo-av';
 import { ThemedText } from './ThemedText';
 import { ThemedView } from './ThemedView';
 import { Ionicons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system';
 
 interface AudioRecorderProps {
   onRecordingComplete?: (uri: string) => void;
@@ -15,6 +16,7 @@ export default function AudioRecorder({ onRecordingComplete }: AudioRecorderProp
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   async function startRecording() {
     try {
@@ -24,9 +26,25 @@ export default function AudioRecorder({ onRecordingComplete }: AudioRecorderProp
         playsInSilentModeIOS: true,
       });
 
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
+      const { recording } = await Audio.Recording.createAsync({
+        android: {
+          extension: '.wav',
+          outputFormat: Audio.AndroidOutputFormat.DEFAULT,
+          audioEncoder: Audio.AndroidAudioEncoder.ENCODED_PCM_16BIT,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+        },
+        ios: {
+          extension: '.wav',
+          audioQuality: Audio.IOSAudioQuality.HIGH,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+          bitRate: 128000,
+        },
+      });
       setRecording(recording);
       setIsRecording(true);
       setRecordingUri(null); // Clear previous recording
@@ -45,11 +63,59 @@ export default function AudioRecorder({ onRecordingComplete }: AudioRecorderProp
       setIsRecording(false);
       setRecordingUri(uri || null);
       
-      if (uri && onRecordingComplete) {
-        onRecordingComplete(uri);
+      if (uri) {
+        if (onRecordingComplete) {
+          onRecordingComplete(uri);
+        }
+        // Send to backend for processing
+        await processAudio(uri);
       }
     } catch (err) {
       console.error('Failed to stop recording', err);
+    }
+  }
+
+  async function processAudio(uri: string) {
+    try {
+      setIsProcessing(true);
+
+      // Create form data
+      const formData = new FormData();
+      formData.append('file', {
+        uri,
+        type: 'audio/wav',
+        name: 'recording.wav',
+      } as any);
+
+      // Send to backend
+      const response = await fetch('http://192.168.0.178:8000/analyze-audio', {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Accept': 'application/json',
+        },
+      });
+
+      const result = await response.json();
+      
+      if (result.error) {
+        console.error('Backend processing failed:', result.error);
+        return;
+      }
+
+      // Save MIDI file
+      if (result.midi) {
+        const midiUri = `${FileSystem.documentDirectory}recording.mid`;
+        await FileSystem.writeAsStringAsync(midiUri, result.midi, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        console.log('MIDI file saved at:', midiUri);
+      }
+
+    } catch (err) {
+      console.error('Failed to process audio:', err);
+    } finally {
+      setIsProcessing(false);
     }
   }
 
@@ -95,6 +161,7 @@ export default function AudioRecorder({ onRecordingComplete }: AudioRecorderProp
       <TouchableOpacity
         style={[styles.recordButton, isRecording && styles.recordingButton]}
         onPress={isRecording ? stopRecording : startRecording}
+        disabled={isProcessing}
       >
         <Ionicons 
           name={isRecording ? "stop" : "mic"} 
@@ -105,15 +172,23 @@ export default function AudioRecorder({ onRecordingComplete }: AudioRecorderProp
 
       {recordingUri && (
         <TouchableOpacity
-          style={[styles.playButton, isPlaying && styles.playingButton]}
+          style={[
+            styles.playButton, 
+            isPlaying && styles.playingButton,
+            isProcessing && styles.processingButton
+          ]}
           onPress={isPlaying ? stopSound : playSound}
-          disabled={isRecording}
+          disabled={isRecording || isProcessing}
         >
-          <Ionicons 
-            name={isPlaying ? "stop" : "play"} 
-            size={32} 
-            color="white" 
-          />
+          {isProcessing ? (
+            <ThemedText>Processing...</ThemedText>
+          ) : (
+            <Ionicons 
+              name={isPlaying ? "stop" : "play"} 
+              size={32} 
+              color="white" 
+            />
+          )}
         </TouchableOpacity>
       )}
     </ThemedView>
@@ -151,5 +226,8 @@ const styles = StyleSheet.create({
   },
   playingButton: {
     backgroundColor: '#FFA000',
+  },
+  processingButton: {
+    backgroundColor: '#9E9E9E',
   },
 }); 
